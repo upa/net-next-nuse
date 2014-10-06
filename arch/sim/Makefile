@@ -12,10 +12,16 @@ NETMAP?=no
 netmap_yes=nuse-vif-netmap.c
 netmap_no=
 
+DPDK?=no
+dpdk_yes=nuse-vif-dpdk.c
+dpdk_no=
+dpdk_cflag_yes=-I${RTE_SDK}/${RTE_TARGET}/include
+dpdk_cflag_no=
+
 NUSE_SRC=\
 nuse.c nuse-fiber.c nuse-vif.c \
 nuse-vif-rawsock.c nuse-glue.c nuse-hostcalls.c \
-$(netmap_$(NETMAP))
+$(netmap_$(NETMAP)) $(dpdk_$(DPDK))
 
 SIM_SRC=\
 fs.c random.c softirq.c time.c \
@@ -51,7 +57,7 @@ CFLAGS+= \
  -U__FreeBSD__ -D__linux__=1 -Dlinux=1 -D__linux=1 \
  -I$(ARCH_DIR)/include -I$(srctree)/include \
  -I$(ARCH_DIR) -I$(srctree) -I$(srctree) -I$(srctree)/include/uapi \
- $(PIC_CFLAGS) -D_DEBUG $(cov_$(COV))
+ $(PIC_CFLAGS) -D_DEBUG $(cov_$(COV)) $(dpdk_cflag_$(DPDK))
 
 include $(ARCH_DIR)/processor.mk
 
