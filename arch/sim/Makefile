@@ -57,7 +57,7 @@ endif
 NUSE_SRC=\
 nuse.c nuse-fiber.c nuse-vif.c  nuse-poll.c \
 nuse-vif-rawsock.c nuse-glue.c nuse-hostcalls.c nuse-config.c \
-nuse-vif-tap.c $(netmap_$(NETMAP))
+nuse-vif-tap.c nuse-vif-mem.c $(netmap_$(NETMAP))
 
 SIM_SRC=\
 fs.c random.c softirq.c time.c \
