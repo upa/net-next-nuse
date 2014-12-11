@@ -58,8 +58,12 @@ nuse_config_parse_interface(char *line, FILE *fp, struct nuse_config *cf)
 			/* no item in the line */
 			break;
 
-		if (strncmp(args[0], "address", 7) == 0)
+		if (strncmp(args[0], "address", 7) == 0) {
+			if (strncmp(args[1], "bootp", 5) == 0) {
+				vifcf->dynamic = 1;
+			}
 			strncpy(vifcf->address, args[1], NUSE_ADDR_STRLEN);
+		}
 		if (strncmp(args[0], "netmask", 7) == 0)
 			strncpy(vifcf->netmask, args[1], NUSE_ADDR_STRLEN);
 		if (strncmp(args[0], "macaddr", 7) == 0)
@@ -83,11 +87,14 @@ nuse_config_parse_interface(char *line, FILE *fp, struct nuse_config *cf)
 	/* setup ifreq */
 	sin = (struct sockaddr_in *)&vifcf->ifr_vif_addr.ifr_addr;
 	sin->sin_family = AF_INET;
-	sin->sin_addr.s_addr = inet_addr(vifcf->address);
+	if (!vifcf->dynamic)
+		sin->sin_addr.s_addr = inet_addr(vifcf->address);
+
 
 	sin = (struct sockaddr_in *)&vifcf->ifr_vif_mask.ifr_netmask;
 	sin->sin_family = AF_INET;
-	sin->sin_addr.s_addr = inet_addr(vifcf->netmask);
+	if (!vifcf->dynamic)
+		sin->sin_addr.s_addr = inet_addr(vifcf->netmask);
 
 	/* XXX: ifname attached to nuse process is same as host stck */
 	strncpy(vifcf->ifr_vif_addr.ifr_name, vifcf->ifname, IFNAMSIZ);
