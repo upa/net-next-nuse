@@ -374,7 +374,17 @@ nuse_bootp_recv_reply(struct bootp_ctx *ctx)
 		ctx->address = b->your_ip;
 
 		/* ok, parse it */
-		do_bootp_ext(b->exten, ctx);
+		__u8 *ext, *end = (__u8 *)(buf + ret);
+		ext = &b->exten[4];	// skip cookie
+		while (ext < end && *ext != 0xff) {
+			__u8 *opt = ext++;
+			if (*opt == 0)	/* padding */
+				continue;
+
+			do_bootp_ext(ext, ctx);
+			ext += *ext + 1;
+		}
+		break;
 	}
 
 	printf("\n");
