@@ -332,24 +332,26 @@ nuse_bootp_recv_reply(struct bootp_ctx *ctx)
 	int ret;
 	int timeout = 10;	/* default timeout 10 sec */
 	char buf[1024];
+	time_t before;
 	struct bootp_pkt *b;
 	struct pollfd x[1];
 
 	x[0].fd = ctx->sock;
 	x[0].events = POLLIN;
 
+	before = time (NULL);
+
 	printf("waiting bootp reply\n");
 
 	for (;;) {
 
-		if (poll(x, 1, 1000) == 0) {
-			printf(".");
-			fflush(stdout);
-			if (timeout-- < 0) {
-				printf("timeout!!\n");
-				return 0;
-			}
+		if (time (NULL) - before > timeout) {
+			printf ("bootp timeout!\n");
+			return 0;
 		}
+
+		if (poll(x, 1, 1000) == 0)
+			continue;
 
 		ret = read(ctx->sock, buf, sizeof(buf));
 		if (ret < 0) {
