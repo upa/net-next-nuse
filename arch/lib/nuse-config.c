@@ -54,9 +54,8 @@ nuse_config_parse_interface(char *line, FILE *fp, struct nuse_config *cf)
 
 		ret = strsplit(buf, args, sizeof(args));
 
-		if (ret == 0)
-			/* no item in the line */
-			break;
+		if (ret < 2)
+			break;	// no item in the line
 
 		if (strncmp(args[0], "address", 7) == 0) {
 			if (strncmp(args[1], "bootp", 5) == 0) {
