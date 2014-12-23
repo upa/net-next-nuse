@@ -17,6 +17,7 @@ struct nuse_vif_config {
 	char address[NUSE_ADDR_STRLEN];
 	char netmask[NUSE_ADDR_STRLEN];
 	char macaddr[NUSE_MACADDR_STRLEN];
+	int dynamic;	/* using bootp */
 
 	enum viftype type;
 
@@ -46,7 +47,5 @@ int nuse_config_parse(struct nuse_config *cf, char *cfname);
 
 /* free cf->nuse_vif_config and cf->nuse_route_config  */
 void nuse_config_free(struct nuse_config *cf);
-
-
 
 #endif /* _NUSE_CONFIG_H_ */

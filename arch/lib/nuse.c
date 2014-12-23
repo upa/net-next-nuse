@@ -6,8 +6,8 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>	/* eth_random_addr() */
 #include <linux/inetdevice.h>
-#include <net/route.h>
-#include <net/ipconfig.h>       /* ip_route_iotcl() */
+#include <net/route.h>		/* ip_rt_ioctl() */
+#include <net/ipconfig.h>       /* ic_proto_enabled */
 #include <net/net_namespace.h>
 #include <bits/pthreadtypes.h>
 #include <drivers/base/base.h>
@@ -25,6 +25,7 @@
 #include "nuse-hostcalls.h"
 #include "nuse-vif.h"
 #include "nuse-config.h"
+#include "nuse-bootp.h"
 #include "nuse-libc.h"
 
 
@@ -317,13 +318,26 @@ nuse_netdev_lo_up(void)
 }
 
 void
+nuse_route_install(struct nuse_route_config *rtcf)
+{
+	int err;
+
+	err = ip_rt_ioctl(&init_net, SIOCADDRT, &rtcf->route);
+	if (err)
+		lib_printf("err ip_rt_ioctl to add route to %s via %s %d\n",
+			   rtcf->network, rtcf->gateway, err);
+}
+
+void
 nuse_netdev_create(struct nuse_vif_config *vifcf)
 {
 	/* create net_device for nuse process from nuse_vif_config */
 	int err;
 	struct nuse_vif *vif;
+	struct bootp_ctx ctx;
 	struct ifreq ifr;
 	struct SimTask *task = NULL;
+
 	void *fiber;
 
 	printf("create vif %s\n", vifcf->ifname);
@@ -354,28 +368,6 @@ nuse_netdev_create(struct nuse_vif_config *vifcf)
 	lib_dev_set_address(dev, vifcf->mac);
 	ether_setup((struct net_device *)dev);
 
-	/* assign IPv4 address */
-	/* XXX: ifr_name is already fileed by nuse_config_parse_interface,
-	   I don't know why, but vifcf->ifr_vif_addr.ifr_name is NULL here. */
-	strcpy(vifcf->ifr_vif_addr.ifr_name, vifcf->ifname);
-
-	err = devinet_ioctl(&init_net, SIOCSIFADDR, &vifcf->ifr_vif_addr);
-	if (err) {
-		perror("devinet_ioctl");
-		printf("err devinet_ioctl for assign address %s for %s,%s %d\n",
-		       vifcf->address, vifcf->ifname,
-		       vifcf->ifr_vif_addr.ifr_name, err);
-	}
-
-	/* set netmask */
-	err = devinet_ioctl(&init_net, SIOCSIFNETMASK, &vifcf->ifr_vif_mask);
-	if (err) {
-		perror("devinet_ioctl");
-		printf("err devinet_ioctl for assign netmask %s for %s,%s %d\n",
-		       vifcf->netmask, vifcf->ifname,
-		       vifcf->ifr_vif_mask.ifr_name, err);
-	}
-
 	/* IFF_UP */
 	memset(&ifr, 0, sizeof(ifr));
 	ifr.ifr_flags = IFF_UP;
@@ -394,19 +386,68 @@ nuse_netdev_create(struct nuse_vif_config *vifcf)
 	task = lib_task_create(fiber, getpid());
 	list_add_tail_rcu(&task->head, &g_task_lists);
 	nuse_fiber_start(fiber);
+
+	/* assign IPv4 address */
+	/* XXX: ifr_name is already fileed by nuse_config_parse_interface,
+	   I don't know why, but vifcf->ifr_vif_addr.ifr_name is NULL here. */
+	strcpy(vifcf->ifr_vif_addr.ifr_name, vifcf->ifname);
+
+	/* start dhcp if specified */
+	if (vifcf->dynamic) {
+
+		if (nuse_bootp_ctx_init(&ctx, vifcf->ifname) < 1)
+			return;
+
+		if (nuse_bootp_start(&ctx) < 1)
+			return;
+
+		struct sockaddr_in *sin;
+		sin = (struct sockaddr_in *)&vifcf->ifr_vif_addr.ifr_addr;
+		sin->sin_addr.s_addr = ctx.address;
+
+		sin = (struct sockaddr_in *)&vifcf->ifr_vif_mask.ifr_addr;
+		sin->sin_addr.s_addr = ctx.netmask;
+	}
+
+	err = devinet_ioctl(&init_net, SIOCSIFADDR, &vifcf->ifr_vif_addr);
+	if (err) {
+		perror("devinet_ioctl");
+		printf("err devinet_ioctl. assign address %s for %s, %s %d\n",
+		       vifcf->address, vifcf->ifname,
+		       vifcf->ifr_vif_addr.ifr_name, err);
+	}
+
+	/* set netmask */
+	err = devinet_ioctl(&init_net, SIOCSIFNETMASK, &vifcf->ifr_vif_mask);
+	if (err) {
+		perror("devinet_ioctl");
+		printf("err devinet_ioctl. assign netmask %s for %s, %s %d\n",
+		       vifcf->netmask, vifcf->ifname,
+		       vifcf->ifr_vif_mask.ifr_name, err);
+	}
+
+	/* install deafult route if bootp enabled */
+	if (vifcf->dynamic && ctx.gateway) {
+		struct nuse_route_config rtcf;
+		struct sockaddr_in *sin;
+
+		memset (&rtcf, 0, sizeof(rtcf));
+		sin = (struct sockaddr_in *)&rtcf.route.rt_dst;
+		sin->sin_family = AF_INET;
+		sin->sin_addr.s_addr = 0;
+
+		sin = (struct sockaddr_in *)&rtcf.route.rt_genmask;
+		sin->sin_family = AF_INET;
+		sin->sin_addr.s_addr = 0;
+
+		sin = (struct sockaddr_in *)&rtcf.route.rt_gateway;
+		sin->sin_family = AF_INET;
+		sin->sin_addr.s_addr = ctx.gateway;
+
+		nuse_route_install(&rtcf);
+	}
 }
 
-
-void
-nuse_route_install(struct nuse_route_config *rtcf)
-{
-	int err;
-
-	err = ip_rt_ioctl(&init_net, SIOCADDRT, &rtcf->route);
-	if (err)
-		lib_printf("err ip_rt_ioctl to add route to %s via %s %d\n",
-			   rtcf->network, rtcf->gateway, err);
-}
 
 extern void lib_init(struct SimExported *exported,
 		const struct SimImported *imported,
