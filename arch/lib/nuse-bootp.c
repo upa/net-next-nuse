@@ -332,24 +332,20 @@ nuse_bootp_recv_reply(struct bootp_ctx *ctx)
 	int ret;
 	int timeout = 10;	/* default timeout 10 sec */
 	char buf[1024];
-	time_t before, after;
 	struct bootp_pkt *b;
 	struct pollfd x[1];
 
 	x[0].fd = ctx->sock;
 	x[0].events = POLLIN;
 
-	before = time(NULL);
-
 	printf("waiting bootp reply\n");
 
 	for (;;) {
 
-		if (poll(x, 1, 1) == 0) {
+		if (poll(x, 1, 1000) == 0) {
 			printf(".");
 			fflush(stdout);
-			after = time(NULL);
-			if ((after - before) > timeout) {
+			if (timeout-- < 0) {
 				printf("timeout!!\n");
 				return 0;
 			}
@@ -419,7 +415,7 @@ nuse_bootp_start(struct bootp_ctx *ctx)
 	inet_ntop(AF_INET, &ctx->netmask, mask, sizeof(mask));
 	inet_ntop(AF_INET, &ctx->gateway, gate, sizeof(gate));
 
-	printf("%s BOotp done\n", ctx->ifname);
+	printf("%s Bootp done\n", ctx->ifname);
 	printf("ADDRESS: %s\n", addr);
 	printf("NETMASK: %s\n", mask);
 	printf("GATEWAY: %s\n", gate);

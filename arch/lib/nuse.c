@@ -448,7 +448,6 @@ nuse_netdev_create(struct nuse_vif_config *vifcf)
 	}
 }
 
-
 extern void lib_init(struct SimExported *exported,
 		const struct SimImported *imported,
 		struct SimKernel *kernel);
