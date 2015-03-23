@@ -58,6 +58,10 @@ MODULE_AUTHOR ("upa@haeena.net");
 #define IPV4_IPIP_HEADROOM	(20 + 14)
 #define IPV6_IPIP_HEADROOM	(40 + 14)
 
+#define IPV4_GRE_MSSDEC_SIZE	(20 + 4)
+#define IPV4_IPIP_MSSDEC_SIZE	(20)
+#define IPV4_LSRR_MSSDEC_SIZE	(20 + 4)
+
 #define FLOW_HASH_BITS			8
 #define FLOW_LIFETIME			(60 * HZ)
 #define FLOW_CLASSIFIER_INTERVAL	(1 * HZ)
@@ -762,6 +766,13 @@ _iplb_flow_classifier (unsigned long arg)
 			tuple = find_relay_tuple (rtable, AF_INET,
 						  &flow4->daddr, 32);
 
+			if (unlikely (!tuple)) {
+				pr_debug (IPLB_NAME
+					  ":%s: tuple for flow not found\n",
+					  __func__);
+				continue;
+			}
+
 			tc = &tuple->tc;
 
 			if (tc->rmax->index != flow4->relay_index) {
@@ -913,7 +924,38 @@ _ipv4_set_gre_encap (struct sk_buff * skb, __be32 * addr)
 static inline void
 ipv4_set_gre_encap (struct sk_buff * skb, struct relay_addr * relay)
 {
-	int n;
+	int n, len = 0;
+	struct iphdr * ip;
+	struct tcphdr * tcp;
+
+	struct opt_mss {
+		u8 type;
+		u8 len;
+		u16 mss;
+	} * opt;
+
+	/* clamp tcp mss */
+	ip = (struct iphdr *) skb_network_header (skb);
+	if (ip->protocol != IPPROTO_TCP)
+		goto encap;
+
+	tcp = (struct tcphdr *) skb_transport_header (skb);
+	if (!tcp->syn)
+		goto encap;
+
+	opt = (struct opt_mss *)(tcp + 1);
+	while (opt->type != 0 && len < tcp->doff) {
+		if (opt->type == TCP_MAXSEG) {
+			/* ip hdr + gre hdr = 24 byte */
+			opt->mss = htons ((ntohs (opt->mss)) -
+					  24 * relay->relay_count);
+			break;
+		}
+		len += opt->len;
+		opt = (struct opt_mss *)(((char *) opt) + opt->len);
+	}
+
+encap:
 
 	for (n = relay->relay_count - 1; n >= 0; n--) {
 		_ipv4_set_gre_encap (skb, relay->relay_ip4[n]);
@@ -940,7 +982,7 @@ _ipv4_set_ipip_encap (struct sk_buff * skb, __be32 * addr)
 
 	ipiph->version	= IPVERSION;
 	ipiph->ihl	= sizeof (struct iphdr) >> 2;
-	ipiph->tos	= iph->tos;
+	ipiph->tos	= iph->tos ^ IP_DF;
 	ipiph->id	= iph->id;
 	ipiph->frag_off	= 0;
 	ipiph->ttl	= 16;
@@ -1210,9 +1252,6 @@ nf_iplb_v4_localout (const struct nf_hook_ops * ops,
 	struct iphdr		* ip;
 	struct relay_tuple	* tuple;
 	struct relay_addr	* relay;
-	struct flowi4	fl4;
-	struct rtable	* rt;
-	struct dst_entry * dst;
 	__be32 original_saddr;
 
 	ip = (struct iphdr *) skb->data;
@@ -1237,6 +1276,12 @@ nf_iplb_v4_localout (const struct nf_hook_ops * ops,
 	relay->stats[0].pkt_count++;
 	relay->stats[0].byte_count += skb->len;
 
+#ifdef IPLB_REROUTE_ENCAPED
+
+	struct flowi4	fl4;
+	struct rtable	* rt;
+	struct dst_entry * dst;
+
         /* lookup routing table again for new destination (ourter header) */
 	ip = (struct iphdr *) skb_network_header (skb);
 
@@ -1258,11 +1303,84 @@ nf_iplb_v4_localout (const struct nf_hook_ops * ops,
 	skb_dst_drop (skb);
 	skb_dst_set (skb, &rt->dst);
 
+#endif /* IPLB_REROUTE_ENCAPED */
+
 	return NF_ACCEPT;
 }
 
+static unsigned int
+nf_iplb_v4_localin (const struct nf_hook_ops * ops,
+		    struct sk_buff * skb,
+		    const struct net_device * in,
+		    const struct net_device * out,
+		    int (*okfn)(struct sk_buff *))
+{
+	/* clamp mss for incoming tcp syn packet */
 
+	int len = 0;
+	u8 declen = 0;
+	struct iphdr * ip;
+	struct tcphdr * tcp;
+	struct relay_tuple * tuple;
+	struct relay_addr * relay;
+	struct iplb_flow4 * flow4;
+	struct opt_mss {
+		u8 type;
+		u8 len;
+		u16 mss;
+	} * opt;
 
+	ip = (struct iphdr *) skb_network_header (skb);
+
+	if (ip->protocol != IPPROTO_TCP)
+		return NF_ACCEPT;
+
+	tcp = (struct tcphdr *) skb_transport_header (skb);
+	if (!tcp->syn)
+		return NF_ACCEPT;
+
+	tuple = find_relay_tuple (&rtable4, AF_INET, &ip->saddr, 32);
+	if (!tuple)
+		return NF_ACCEPT;
+
+	if (lookup_fn == lookup_relay_addr_from_tuple_flowbase) {
+		/* find outgoing flow */
+		flow4 = find_flow4 (ip->protocol, ip->daddr, ip->saddr,
+				    tcp->dest, tcp->source);
+		if (!flow4 || flow4->relay_index == 0)
+			return NF_ACCEPT;
+
+		relay = tuple->relay_table[flow4->relay_index];
+
+	} else
+		relay = lookup_fn (skb, tuple);
+
+	if (!relay)
+		return NF_ACCEPT;
+
+	if (relay->encap_type == IPLB_ENCAP_TYPE_GRE)
+		declen = IPV4_GRE_MSSDEC_SIZE;
+	else if (relay->encap_type == IPLB_ENCAP_TYPE_IPIP)
+		declen = IPV4_IPIP_MSSDEC_SIZE;
+	else if (relay->encap_type == IPLB_ENCAP_TYPE_LSRR)
+		declen = IPV4_LSRR_MSSDEC_SIZE;
+	else {
+		printk (KERN_INFO IPLB_NAME ": invalid encap type\n");
+		return NF_ACCEPT;
+	}
+
+	opt = (struct opt_mss *) (tcp + 1);
+	while (opt->type != 0 && len < tcp->doff) {
+		if (opt->type == TCP_MAXSEG) {
+			opt->mss = htons (ntohs (opt->mss) -
+					  declen * relay->relay_count);
+		}
+		len += opt->len;
+		opt = (struct opt_mss *)(((char *) opt) + opt->len);
+	}
+
+	return NF_ACCEPT;
+}
 
 
 /*
@@ -1373,6 +1491,13 @@ static struct nf_hook_ops nf_iplb_ops[] __read_mostly = {
 		.owner		= THIS_MODULE,
 		.pf		= NFPROTO_IPV4,
 		.hooknum	= NF_INET_LOCAL_OUT,
+		.priority	= NF_IP_PRI_FIRST,
+	},
+	{
+		.hook		= nf_iplb_v4_localin,
+		.owner		= THIS_MODULE,
+		.pf		= NFPROTO_IPV4,
+		.hooknum	= NF_INET_LOCAL_IN,
 		.priority	= NF_IP_PRI_FIRST,
 	},
 	{
